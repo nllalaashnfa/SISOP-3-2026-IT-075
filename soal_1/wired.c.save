@@ -1,0 +1,127 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <pthread.h>
+#include <time.h>
+#include "protocol.h"
+
+int list_link[MAX_CLIENTS], total = 0;
+char list_nama[MAX_CLIENTS][100];
+time_t start;
+pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+
+void log_it(const char* tag, const char* msg) {
+    FILE* f = fopen("history.log", "a");
+    if(!f) return;
+    time_t now = time(NULL);
+    char jam[25];
+    strftime(jam, 25, "%Y-%m-%d %H:%M:%S", localtime(&now));
+    // Perbaikan Poin 2 & 5: Format log [Time] [Tag] [Msg]
+    fprintf(f, "[%s] [%s] [%s]\n", jam, tag, msg);
+    fclose(f);
+}
+
+void* handle(void* arg) {
+    int link_user = (int)(long)arg; 
+    char txt[BUFFER_SIZE], nama[100], box[2048];
+
+    // Tahap Sinkronisasi Nama
+    while (1) {
+        if (recv(link_user, nama, 100, 0) <= 0) { close(link_user); return NULL; }
+        int ada = 0;
+        pthread_mutex_lock(&lock);
+        for(int i = 0; i < total; i++) {
+            if(strcmp(list_nama[i], nama) == 0) ada = 1;
+        }
+        
+        if (ada) {
+            // Perbaikan Poin 6: Tambah "in The Wired"
+            sprintf(box, "[System] The identity '%s' is already synchronized in The Wired.", nama);
+            send(link_user, box, strlen(box), 0);
+            pthread_mutex_unlock(&lock);
+        } else {
+            strcpy(list_nama[total], nama);
+            list_link[total++] = link_user;
+            pthread_mutex_unlock(&lock);
+            sprintf(box, "--- Welcome to The Wired, %s ---", nama);
+            send(link_user, box, strlen(box), 0);
+            break;
+        }
+    }
+
+    log_it("System", nama); // Log user masuk
+
+    // Loop Utama Chat
+    while (1) {
+        int bytes = recv(link_user, txt, BUFFER_SIZE, 0);
+        
+        // Perbaikan Poin 1: Handle Disconnect
+        if (bytes <= 0) {
+            log_it("System", "User Disconnected"); 
+            pthread_mutex_lock(&lock);
+            // Hapus dari list (opsional tapi bagus buat Entities)
+            for(int i=0; i<total; i++) {
+                if(list_link[i] == link_user) {
+                    list_link[i] = list_link[total-1];
+                    total--; break;
+                }
+            }
+            pthread_mutex_unlock(&lock);
+            close(link_user);
+            return NULL;
+        }
+
+        if (strcmp(nama, ADMIN_NAME) == 0) {
+            // Logika Admin
+            if (txt[0] == '1') {
+                sprintf(box, "Active Entities: %d", total - 1);
+                send(link_user, box, strlen(box), 0);
+                log_it("Admin", "LOG_ENTITIES"); 
+            } 
+            else if (txt[0] == '2') {
+                sprintf(box, "Server Uptime: %ld seconds", time(NULL) - start);
+                send(link_user, box, strlen(box), 0);
+                log_it("Admin", "LOG_UPTIME");
+            } 
+            else if (txt[0] == '3') {
+                log_it("System", "Emergency Shutdown by Admin");
+                pthread_mutex_lock(&lock);
+                for(int i = 0; i < total; i++) send(list_link[i], "SERVER_SHUTDOWN", 15, 0);
+                pthread_mutex_unlock(&lock);
+                sleep(1); exit(0);
+            }
+        } else {
+            // Chat Biasa
+            sprintf(box, "[%s]: %s", nama, txt);
+            pthread_mutex_lock(&lock);
+            for(int i = 0; i < total; i++) {
+                if(list_link[i] != link_user) send(list_link[i], box, strlen(box), 0);
+            }
+            pthread_mutex_unlock(&lock);
+            log_it(nama, txt); // Format: [Nama] [Isi Pesan]
+        }
+        memset(txt, 0, BUFFER_SIZE);
+    }
+}
+
+int main() {
+    start = time(NULL);
+    // Perbaikan Poin 3: Log Server Online
+    log_it("System", "SERVER ONLINE"); 
+
+    int link_srv = socket(AF_INET, SOCK_STREAM, 0);
+    int opt = 1; setsockopt(link_srv, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    struct sockaddr_in addr = {AF_INET, htons(SERVER_PORT), INADDR_ANY};
+    bind(link_srv, (struct sockaddr*)&addr, sizeof(addr));
+    listen(link_srv, MAX_CLIENTS);
+    printf("Server running on port %d...\n", SERVER_PORT);
+    
+    while (1) {
+        int masuk = accept(link_srv, NULL, NULL);
+        pthread_t t;
+        pthread_create(&t, NULL, handle, (void*)(long)masuk);
+        pthread_detach(t);
+    }
+}
