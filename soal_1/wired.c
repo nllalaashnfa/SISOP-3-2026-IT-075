@@ -7,122 +7,113 @@
 #include <time.h>
 #include "protocol.h"
 
-int list_link[MAX_CLIENTS], total = 0, is_shutdown = 0;
-char list_nama[MAX_CLIENTS][100];
-time_t start;
-pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+// Daftar untuk menampung koneksi dan nama yang sedang aktif
+int koneksi_user[MAX_CLIENTS], total_user = 0, sedang_shutdown = 0;
+char nama_user[MAX_CLIENTS][100];
+time_t waktu_mulai;
+pthread_mutex_t kunci_server = PTHREAD_MUTEX_INITIALIZER;
 
-void log_it(const char* tag, const char* msg) {
-    FILE* f = fopen("history.log", "a");
-    if(!f) return;
-    time_t now = time(NULL);
-    char jam[25];
-    strftime(jam, 25, "%Y-%m-%d %H:%M:%S", localtime(&now));
-    fprintf(f, "[%s] [%s] [%s]\n", jam, tag, msg);
-    fclose(f);
-}
+void catat_log(const char* tag, const char* pesan) { FILE* f = fopen("history.log", "a");
+    if(!f) return; time_t sekarang = time(NULL); char jam[25];
+strftime(jam, 25, "%Y-%m-%d %H:%M:%S", localtime(&sekarang)); fprintf(f, "[%s] [%s] [%s]\n", jam, tag, pesan);
+  fclose(f);
+} void* tangani_client(void* arg) {
+int socket_saya = (int)(long)arg; 
+ char buffer[BUFFER_SIZE], nama[100], balasan[2048], pesan_log[2048];
+		while (1) {memset(nama, 0, 100);
+  if (recv(socket_saya, nama, 100, 0) <= 0) { close(socket_saya); return NULL; } nama[strcspn(nama, "\r\n")] = 0;
 
-void* handle(void* arg) {
-    int link_user = (int)(long)arg; 
-    char txt[BUFFER_SIZE], nama[100], box[2048], log_msg[2048];
-
-    while (1) {
-        memset(nama, 0, 100);
-        if (recv(link_user, nama, 100, 0) <= 0) { close(link_user); return NULL; }
-        nama[strcspn(nama, "\r\n")] = 0;
-        pthread_mutex_lock(&lock);
-        int ada = 0;
-        for(int i = 0; i < total; i++) if(strcmp(list_nama[i], nama) == 0) ada = 1;
-        if (ada) {
-            sprintf(box, "[System] The identity '%s' is already synchronized in The Wired.", nama);
-            send(link_user, box, strlen(box), 0);
-            pthread_mutex_unlock(&lock); continue; 
-        }
-        strncpy(list_nama[total], nama, 99);
-        list_link[total++] = link_user;
-        pthread_mutex_unlock(&lock); break; 
-    }
-
-    sprintf(box, "--- Welcome to The Wired, %s ---", nama);
-    send(link_user, box, strlen(box), 0);
-    sprintf(log_msg, "User '%s' connected", nama);
-    log_it("System", log_msg); 
-
-    while (1) {
-        memset(txt, 0, BUFFER_SIZE);
-        int bytes = recv(link_user, txt, BUFFER_SIZE, 0);
-        if (bytes <= 0) {
-            pthread_mutex_lock(&lock);
-            if (!is_shutdown) { // Hanya log jika bukan shutdown
-                for(int i=0; i<total; i++) {
-                    if(list_link[i] == link_user) {
-                        sprintf(log_msg, "User '%s' disconnected", nama);
-                        log_it("System", log_msg); 
-                        list_link[i] = list_link[total-1];
-                        strcpy(list_nama[i], list_nama[total-1]);
-                        total--; break;
-                    }
-                }
-            }
-            pthread_mutex_unlock(&lock);
-            close(link_user); return NULL;
+pthread_mutex_lock(&kunci_server);
+ int sudah_ada = 0;
+        for(int i = 0; i < total_user; i++) {
+            if(strcmp(nama_user[i], nama) == 0) sudah_ada = 1;
+        } if (sudah_ada) { sprintf(balasan, "[System] The identity '%s' is already synchronized in The Wired.", nama); send(socket_saya, balasan, strlen(balasan), 0); pthread_mutex_unlock(&kunci_server);
+      continue; 
         }
 
-        if (strcmp(nama, ADMIN_NAME) == 0) {
-            if (txt[0] == '1') {
-                char list_user[1024] = ""; int count_biasa = 0;
-                for(int i = 0; i < total; i++) {
-                    if(strcmp(list_nama[i], ADMIN_NAME) != 0) {
-                        strcat(list_user, "\n- "); strcat(list_user, list_nama[i]);
-                        count_biasa++;
+strncpy(nama_user[total_user], nama, 99); koneksi_user[total_user++] = socket_saya; pthread_mutex_unlock(&kunci_server);
+        break; 
+} sprintf(balasan, "--- Welcome to The Wired, %s ---", nama); send(socket_saya, balasan, strlen(balasan), 0);
+  sprintf(pesan_log, "User '%s' connected", nama); catat_log("System", pesan_log); 
+
+    while (1) { memset(buffer, 0, BUFFER_SIZE);
+ int byte_masuk = recv(socket_saya, buffer, BUFFER_SIZE, 0);
+if (byte_masuk <= 0) { pthread_mutex_lock(&kunci_server);
+   if (!sedang_shutdown) {
+ for(int i=0; i < total_user; i++) {
+if(koneksi_user[i] == socket_saya) { sprintf(pesan_log, "User '%s' disconnected", nama); catat_log("System", pesan_log); 
+
+koneksi_user[i] = koneksi_user[total_user-1]; strcpy(nama_user[i], nama_user[total_user-1]); total_user--; break;
                     }
                 }
-                sprintf(box, "Active Entities: %d%s", count_biasa, list_user);
-                send(link_user, box, strlen(box), 0);
-                log_it("Admin", "RPC_GET_USERS");
-            } 
-            else if (txt[0] == '2') {
-                sprintf(box, "Server Uptime: %ld seconds", time(NULL) - start);
-                send(link_user, box, strlen(box), 0);
-                log_it("Admin", "RPC_GET_UPTIME");
-            } 
-            else if (txt[0] == '3') {
-                log_it("Admin", "RPC_SHUTDOWN");
-                log_it("System", "EMERGENCY SHUTDOWN INITIATED");
-                pthread_mutex_lock(&lock);
-                is_shutdown = 1; // FLAG AKTIF
-                for(int i = 0; i < total; i++) {
-                    send(list_link[i], "SERVER_SHUTDOWN", 15, 0);
-                    sprintf(log_msg, "User '%s' disconnected", list_nama[i]);
-                    log_it("System", log_msg);
-                }
-                pthread_mutex_unlock(&lock);
-                sleep(1); _exit(0); 
-            }
+            } pthread_mutex_unlock(&kunci_server); close(socket_saya); return NULL;
+        } if (strcmp(nama, ADMIN_NAME) == 0) {
+ if (buffer[0] == '1') {
+char daftar[1024] = ""; int jumlah = 0;
+	for(int i = 0; i < total_user; i++) {
+if(strcmp(nama_user[i], ADMIN_NAME) != 0) { strcat(daftar, "\n- "); strcat(daftar, nama_user[i]);
+                        jumlah++;
+                    }
+                } sprintf(balasan, "Active Entities: %d%s", jumlah, daftar);
+ send(socket_saya, balasan, strlen(balasan), 0); catat_log("Admin", "RPC_GET_USERS");
+            } else if (buffer[0] == '2') { sprintf(balasan, "Server Uptime: %ld seconds", time(NULL) - waktu_mulai);
+        send(socket_saya, balasan, strlen(balasan), 0); catat_log("Admin", "RPC_GET_UPTIME");
+            } else if (buffer[0] == '3') { catat_log("Admin", "RPC_SHUTDOWN");
+catat_log("System", "EMERGENCY SHUTDOWN INITIATED"); pthread_mutex_lock(&kunci_server); sedang_shutdown = 1;
+                
+
+for(int i = 0; i < total_user; i++) {
+ send(koneksi_user[i], "SERVER_SHUTDOWN", 15, 0); sprintf(pesan_log, "User '%s' disconnected", nama_user[i]);
+  catat_log("System", pesan_log);
+                } pthread_mutex_unlock(&kunci_server);
+                sleep(1); _exit(0); }
         } else {
-            sprintf(box, "[%s]: %s", nama, txt);
-            pthread_mutex_lock(&lock);
-            for(int i = 0; i < total; i++) if(list_link[i] != link_user) send(list_link[i], box, strlen(box), 0);
-            pthread_mutex_unlock(&lock);
-            sprintf(log_msg, "[%s]: %s", nama, txt);
-            log_it("User", log_msg); 
-        }
+	sprintf(balasan, "[%s]: %s", nama, buffer); pthread_mutex_lock(&kunci_server);
+for(int i = 0; i < total_user; i++) {
+     if(koneksi_user[i] != socket_saya) send(koneksi_user[i], balasan, strlen(balasan), 0);
+            } pthread_mutex_unlock(&kunci_server); sprintf(pesan_log, "[%s]: %s", nama, buffer);
+   catat_log("User", pesan_log); }
     }
 }
 
-int main() {
-    start = time(NULL);
-    log_it("System", "SERVER ONLINE"); 
-    int link_srv = socket(AF_INET, SOCK_STREAM, 0);
-    int opt = 1; setsockopt(link_srv, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    struct sockaddr_in addr = {AF_INET, htons(SERVER_PORT), INADDR_ANY};
-    bind(link_srv, (struct sockaddr*)&addr, sizeof(addr));
-    listen(link_srv, MAX_CLIENTS);
-    printf("Server running on port %d...\n", SERVER_PORT);
-    while (1) {
-        int masuk = accept(link_srv, NULL, NULL);
-        pthread_t t; pthread_create(&t, NULL, handle, (void*)(long)masuk);
-        pthread_detach(t);
- 
-   }
+int main() 
+
+
+{
+
+waktu_mulai = time(NULL); catat_log("System", "SERVER ONLINE"); 
+int socket_server = socket(AF_INET, SOCK_STREAM, 0);
+int opsi = 1; setsockopt(socket_server, SOL_SOCKET, SO_REUSEADDR, &opsi, sizeof(opsi));
+struct sockaddr_in alamat_server = {AF_INET, htons(SERVER_PORT), INADDR_ANY};
+    
+bind(socket_server, (struct sockaddr*)&alamat_server, sizeof(alamat_server)); listen(socket_server, MAX_CLIENTS);
+    
+	printf("Server running on port %d...\n", SERVER_PORT);
+    
+
+	while (1) {
+int socket_baru = accept(socket_server, NULL, NULL);
+pthread_t id_thread;
+pthread_create(&id_thread, NULL, tangani_client, (void*)(long)socket_baru); pthread_detach(id_thread);
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 }
+//:::::::)))))))))
