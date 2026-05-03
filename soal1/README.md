@@ -399,7 +399,7 @@ atau
 tail -f history.log
 ```
 
-![alt text](image-12.png)
+![alt text](assets/image-12.png)
 
 ---
 
